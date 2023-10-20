@@ -6,6 +6,7 @@ plugins {
     java
     kotlin("jvm") version "1.9.0"
     `maven-publish`
+    `java-library`
 }
 
 repositories {
@@ -21,6 +22,7 @@ subprojects {
     apply(plugin = "kotlin")
     apply<JavaPlugin>()
     apply<MavenPublishPlugin>()
+    apply<JavaLibraryPlugin>()
 
     val jackson_version: String by project
 
