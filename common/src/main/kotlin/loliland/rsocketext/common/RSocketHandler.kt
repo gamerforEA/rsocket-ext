@@ -64,6 +64,7 @@ abstract class RSocketHandler(protected val mapper: ObjectMapper) {
                 packet.close()
             }
         }
+        metadata.close()
     }
 
     open suspend fun onFireAndForget(request: Payload) {
