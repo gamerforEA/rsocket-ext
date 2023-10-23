@@ -37,12 +37,14 @@ subprojects {
 
     java {
         toolchain {
-            languageVersion = JavaLanguageVersion.of(17)
+            languageVersion = JavaLanguageVersion.of(8)
         }
     }
 
     kotlin {
-        jvmToolchain(17)
+        jvmToolchain {
+            languageVersion.set(JavaLanguageVersion.of(8))
+        }
         compilerOptions {
             languageVersion.set(KotlinVersion.KOTLIN_1_9)
             apiVersion.set(KotlinVersion.KOTLIN_1_9)
