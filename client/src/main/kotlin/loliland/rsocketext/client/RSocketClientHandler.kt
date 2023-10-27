@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import loliland.rsocketext.common.RSocketHandler
+import loliland.rsocketext.common.extensions.jsonPayload
 
 // TODO: Буфер сообщений при закрытом сокете и отправка как только соединение восстановится
 abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mapper) {
@@ -28,6 +29,8 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
             socket = null
         }
     }
+
+    abstract val metadata: Any?
 
     abstract fun onConnectionSetup(ctx: ConnectionAcceptorContext)
 
@@ -59,3 +62,6 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
 
     private val connection get() = if (connected) socket!! else error("RSocket is closed")
 }
+
+fun <T : RSocketClientHandler> T.buildJsonPayload(route: String? = null, data: Any? = null): Payload =
+    jsonPayload(route = route, customMetadata = metadata, data = data, mapper = mapper)

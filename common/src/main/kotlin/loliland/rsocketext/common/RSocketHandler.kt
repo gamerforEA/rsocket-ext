@@ -3,25 +3,25 @@ package loliland.rsocketext.common
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
+import io.rsocket.kotlin.ExperimentalMetadataApi
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.RSocketRequestHandler
+import io.rsocket.kotlin.core.WellKnownMimeType
+import io.rsocket.kotlin.metadata.*
 import io.rsocket.kotlin.payload.Payload
 import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
-import loliland.rsocketext.common.extensions.errorPayload
-import loliland.rsocketext.common.extensions.jsonPayload
-import loliland.rsocketext.common.extensions.readJson
-import loliland.rsocketext.common.extensions.route
+import loliland.rsocketext.common.extensions.*
 import java.lang.reflect.InvocationTargetException
 import kotlin.reflect.KFunction
-import kotlin.reflect.full.callSuspend
-import kotlin.reflect.full.findAnnotation
-import kotlin.reflect.full.functions
-import kotlin.reflect.full.hasAnnotation
+import kotlin.reflect.KParameter
+import kotlin.reflect.full.*
 import kotlin.reflect.jvm.javaType
 import kotlin.reflect.typeOf
 
-abstract class RSocketHandler(protected val mapper: ObjectMapper) {
+@Suppress("DuplicatedCode")
+@OptIn(ExperimentalMetadataApi::class)
+abstract class RSocketHandler(val mapper: ObjectMapper) {
 
     private val routeHandlers = findHandlers<RSocketRoute>()
     private val metadataHandlers = findHandlers<RSocketMetadata>()
@@ -69,10 +69,14 @@ abstract class RSocketHandler(protected val mapper: ObjectMapper) {
 
     open suspend fun onFireAndForget(request: Payload) {
         try {
-            val handler = findHandler(request.routeOrFailed())
-            val requestData = handler.decodeRequestData(request)
-            val args = if (requestData != null) arrayOf(this, requestData) else arrayOf(this)
-            handler.callSuspend(*args)
+            val metadataPayload = request.readMetadata()
+            val handler = findHandler(metadataPayload.route())
+            val payload = handler.decodeRequestData(request)
+            val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+
+            val thisRef = handler.parameters.first() to this
+            val args = listOfNotNull(thisRef, payload, metadata).toMap()
+            handler.callSuspendBy(args)
         } catch (e: Throwable) {
             e.printStackTrace()
         } finally {
@@ -82,11 +86,14 @@ abstract class RSocketHandler(protected val mapper: ObjectMapper) {
 
     open suspend fun onRequestResponse(request: Payload): Payload {
         return try {
-            val route = request.routeOrFailed()
-            val handler = findHandler(route)
-            val requestData = handler.decodeRequestData(request)
-            val args = if (requestData != null) arrayOf(this, requestData) else arrayOf(this)
-            when (val response = handler.callSuspend(*args)) {
+            val metadataPayload = request.readMetadata()
+            val handler = findHandler(metadataPayload.route())
+            val payload = handler.decodeRequestData(request)
+            val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+
+            val thisRef = handler.parameters.first() to this
+            val args = listOfNotNull(thisRef, payload, metadata).toMap()
+            when (val response = handler.callSuspendBy(args)) {
                 is Unit -> Payload.Empty
                 is Payload -> response
                 else -> jsonPayload(data = response, mapper = mapper)
@@ -138,20 +145,43 @@ abstract class RSocketHandler(protected val mapper: ObjectMapper) {
         }
     }
 
-    private fun Payload.routeOrFailed(): String = route() ?: error("No route specified.")
-
     private fun findHandler(route: String): KFunction<*> {
         return routeHandlers.firstOrNull { it.second.value == route }?.first ?: error("Route $route doesn't exists.")
     }
 
-    private fun KFunction<*>.decodeRequestData(request: Payload): Any? {
-        val parameter = parameters.drop(1).singleOrNull() ?: return null
-        return if (parameter == typeOf<Payload>()) {
+    private fun KFunction<*>.decodeRequestData(request: Payload): Pair<KParameter, Any>? {
+        val parameter = parameters.firstOrNull { it.hasAnnotation<RSocketRoute.Payload>() } ?: return null
+        return parameter to if (parameter == typeOf<Payload>()) {
             request
         } else {
             request.data.readJson<Any>(mapper, parameter.type.javaType)
         }
     }
+
+    @OptIn(ExperimentalMetadataApi::class)
+    private fun KFunction<*>.decodeRequestMetadata(
+        request: Payload,
+        metadataPayload: CompositeMetadata
+    ): Pair<KParameter, Any>? {
+        val parameter = parameters.firstOrNull { it.hasAnnotation<RSocketRoute.Metadata>() } ?: return null
+        return parameter to if (parameter == typeOf<ByteReadPacket>()) {
+            request
+        } else {
+            val metadata = metadataPayload.getOrNull(WellKnownMimeType.ApplicationJson)
+                ?.read(RawMetadata.reader(WellKnownMimeType.ApplicationJson))
+            checkNotNull(metadata) {
+                "The $name function has a @Metadata parameter, but there is no metadata in the request!"
+            }
+            metadata.content.readJson<Any>(mapper, parameter.type.javaType)
+        }
+    }
+
+    private fun Payload.readMetadata(): CompositeMetadata =
+        metadata?.read(CompositeMetadata) ?: error("Broken metadata.")
+
+    private fun CompositeMetadata.route(): String =
+        getOrNull(WellKnownMimeType.MessageRSocketRouting)?.read(RoutingMetadata)?.tags?.firstOrNull()
+            ?: error("No route specified.")
 
     private inline fun <reified A : Annotation> findHandlers(): List<Pair<KFunction<*>, A>> =
         this::class.functions.filter { it.hasAnnotation<A>() }.map { it to it.findAnnotation<A>()!! }

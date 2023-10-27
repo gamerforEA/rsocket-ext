@@ -7,25 +7,47 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.treeToValue
 import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ExperimentalMetadataApi
-import io.rsocket.kotlin.metadata.RoutingMetadata
-import io.rsocket.kotlin.metadata.metadata
-import io.rsocket.kotlin.metadata.read
+import io.rsocket.kotlin.core.WellKnownMimeType
+import io.rsocket.kotlin.metadata.*
 import io.rsocket.kotlin.payload.Payload
 import io.rsocket.kotlin.payload.buildPayload
 import loliland.rsocketext.common.dto.ResponseError
 import java.lang.reflect.Type
 
 @OptIn(ExperimentalMetadataApi::class)
-fun Payload(route: String? = null, packet: ByteReadPacket = ByteReadPacket.Empty): Payload =
-    buildPayload {
+fun Payload(
+    route: String? = null,
+    customMetadata: RawMetadata? = null,
+    packet: ByteReadPacket = ByteReadPacket.Empty
+): Payload {
+    val metadataEntries = buildList(2) {
         route?.also {
-            metadata(RoutingMetadata(it))
+            this += RoutingMetadata(it)
+        }
+        customMetadata?.also {
+            this += customMetadata
+        }
+    }
+    return buildPayload {
+        if (metadataEntries.isNotEmpty()) {
+            metadata(CompositeMetadata(*metadataEntries.toTypedArray()))
         }
         data(packet)
     }
+}
 
-fun <T> jsonPayload(route: String? = null, data: T, mapper: ObjectMapper): Payload =
-    Payload(route, buildJsonPacket(data, mapper))
+@OptIn(ExperimentalMetadataApi::class)
+fun jsonPayload(route: String? = null, customMetadata: Any? = null, data: Any?, mapper: ObjectMapper): Payload =
+    Payload(
+        route = route,
+        customMetadata = customMetadata?.let {
+            RawMetadata(
+                mimeType = WellKnownMimeType.ApplicationJson,
+                content = buildJsonPacket(it, mapper)
+            )
+        },
+        packet = buildJsonPacket(data, mapper)
+    )
 
 inline fun <reified T> ByteReadPacket.readJson(mapper: ObjectMapper): T =
     mapper.readValue<T>(readBytes())
@@ -38,11 +60,17 @@ fun <T> buildJsonPacket(value: T, mapper: ObjectMapper): ByteReadPacket =
         writeFully(mapper.writeValueAsBytes(value))
     }
 
-@OptIn(ExperimentalMetadataApi::class)
-fun Payload.route(): String? = metadata?.read(RoutingMetadata)?.tags?.firstOrNull()
-
-fun errorPayload(route: String? = null, error: ResponseError, mapper: ObjectMapper): Payload =
-    Payload(route, buildJsonPacket(mapOf("error" to error), mapper))
+fun errorPayload(
+    route: String? = null,
+    customMetadata: Any? = null,
+    error: ResponseError,
+    mapper: ObjectMapper
+): Payload = jsonPayload(
+    route = route,
+    customMetadata = customMetadata,
+    data = mapOf("error" to error),
+    mapper = mapper
+)
 
 inline fun <reified T : Any> Payload.readValue(mapper: ObjectMapper, onError: (ResponseError) -> T): T {
     return readValue(T::class.java, mapper, onError)
