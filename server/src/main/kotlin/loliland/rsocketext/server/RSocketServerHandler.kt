@@ -31,13 +31,15 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         }
 
         val connection = RSocketConnection(ctx.requester, setupData)
-        if (onConnectionSetup(connection)) {
+        if (canConnectable(connection)) {
             connections[setupData.name] = connection
             connectionsStates[setupData.name]?.complete(Unit)
         } else {
             connection.socket.cancel("Forbidden connection.")
             return
         }
+
+        onConnectionSetup(connection)
 
         ctx.requester.coroutineContext.job.invokeOnCompletion {
             connectionsStates[setupData.name] = CompletableDeferred()
@@ -46,7 +48,9 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         }
     }
 
-    abstract fun onConnectionSetup(connection: RSocketConnection<S>): Boolean
+    abstract fun canConnectable(connection: RSocketConnection<S>): Boolean
+
+    abstract fun onConnectionSetup(connection: RSocketConnection<S>)
 
     abstract fun onConnectionClosed(connection: RSocketConnection<S>, throwable: Throwable?)
 
