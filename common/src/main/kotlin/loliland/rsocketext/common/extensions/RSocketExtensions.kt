@@ -72,12 +72,12 @@ fun errorPayload(
     mapper = mapper
 )
 
-inline fun <reified T : Any> Payload.readValue(mapper: ObjectMapper, onError: (ResponseError) -> T): T {
+inline fun <reified T : Any?> Payload.readValue(mapper: ObjectMapper, onError: (ResponseError) -> T): T {
     return readValue(T::class.java, mapper, onError)
 }
 
 @Suppress("UNCHECKED_CAST")
-inline fun <T : Any> Payload.readValue(type: Type, mapper: ObjectMapper, onError: (ResponseError) -> T): T {
+inline fun <T : Any?> Payload.readValue(type: Type, mapper: ObjectMapper, onError: (ResponseError) -> T): T {
     val json = data.readJson<JsonNode>(mapper)
     if (json.isObject && json.properties().size == 1 && json.has("error")) {
         return onError(mapper.treeToValue<ResponseError>(json["error"]))
