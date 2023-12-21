@@ -98,6 +98,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
             when (val response = handler.callSuspendBy(args)) {
                 is Unit -> Payload.Empty
                 is Payload -> response
+                is ResponseError -> errorPayload(error = response, mapper = mapper)
                 else -> jsonPayload(data = response, mapper = mapper)
             }
         } catch (e: Throwable) {
