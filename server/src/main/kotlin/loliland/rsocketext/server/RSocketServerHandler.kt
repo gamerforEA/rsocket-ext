@@ -10,12 +10,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
+import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
+import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.set
+import kotlin.coroutines.coroutineContext
 
 abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -66,34 +69,77 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
 
     inline fun eachConnection(action: (RSocketConnection<S>) -> Unit) = connections.values.forEach(action)
 
-    suspend fun metadataPush(connectionName: String, metadata: ByteReadPacket) {
-        waitConnection(connectionName).metadataPush(metadata)
+    suspend fun metadataPush(
+        connectionName: String,
+        metadata: ByteReadPacket,
+        duration: Duration = Duration.ofMinutes(5),
+        ifConnectionClosed: () -> Unit = {
+            throw IllegalStateException("Failed metadataPush: connection is closed.")
+        }
+    ) {
+        val connection = waitConnection(connectionName, duration)
+        if (connection != null) {
+            connection.metadataPush(metadata)
+        } else {
+            ifConnectionClosed()
+        }
     }
 
-    suspend fun fireAndForget(connectionName: String, payload: Payload) {
-        waitConnection(connectionName).fireAndForget(payload)
+    suspend fun fireAndForget(
+        connectionName: String,
+        payload: Payload,
+        duration: Duration = Duration.ofMinutes(5),
+        ifConnectionClosed: () -> Unit = {
+            throw IllegalStateException("Failed fireAndForget: connection is closed.")
+        }
+    ) {
+        val connection = waitConnection(connectionName, duration)
+        if (connection != null) {
+            connection.fireAndForget(payload)
+        } else {
+            ifConnectionClosed()
+        }
     }
 
-    suspend fun requestResponse(connectionName: String, payload: Payload): Payload {
-        return waitConnection(connectionName).requestResponse(payload)
+    suspend fun requestResponse(
+        connectionName: String,
+        payload: Payload,
+        duration: Duration = Duration.ofMinutes(5)
+    ): Payload? {
+        return waitConnection(connectionName, duration)?.requestResponse(payload)
     }
 
-    suspend fun requestStream(connectionName: String, payload: Payload): Flow<Payload> {
-        return waitConnection(connectionName).requestStream(payload)
+    suspend fun requestStream(
+        connectionName: String,
+        payload: Payload,
+        duration: Duration = Duration.ofMinutes(5)
+    ): Flow<Payload>? {
+        return waitConnection(connectionName, duration)?.requestStream(payload)
     }
 
-    suspend fun requestChannel(connectionName: String, initPayload: Payload, payloads: Flow<Payload>): Flow<Payload> {
-        return waitConnection(connectionName).requestChannel(initPayload, payloads)
+    suspend fun requestChannel(
+        connectionName: String,
+        initPayload: Payload,
+        payloads: Flow<Payload>,
+        duration: Duration = Duration.ofMinutes(5)
+    ): Flow<Payload>? {
+        return waitConnection(connectionName, duration)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(connectionName: String): RSocket {
-        while (true) {
+    private suspend fun waitConnection(connectionName: String, duration: Duration): RSocket? {
+        while (coroutineContext.isActive) {
             val socket = connections[connectionName]?.socket
             if (socket?.isActive == true) {
                 return socket
             }
             val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
-            state.await()
+
+            val timeout = withTimeoutOrNull(duration) { state.await() }
+            if (timeout == null) {
+                break
+            }
         }
+
+        return null
     }
 }

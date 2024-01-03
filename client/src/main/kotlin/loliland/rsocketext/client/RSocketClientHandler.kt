@@ -7,8 +7,11 @@ import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.extensions.jsonPayload
+import java.time.Duration
+import kotlin.coroutines.coroutineContext
 
 abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -39,34 +42,53 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         socket?.cancel("Gracefully closed.")
     }
 
-    suspend fun metadataPush(metadata: ByteReadPacket) {
-        waitConnection()
-        socket!!.metadataPush(metadata)
+    suspend fun metadataPush(
+        metadata: ByteReadPacket,
+        duration: Duration = Duration.ofMinutes(5),
+        ifConnectionClosed: () -> Unit = {
+            throw IllegalStateException("Failed metadataPush: connection is closed.")
+        }
+    ) {
+        waitConnection(duration)
+        socket?.metadataPush(metadata) ?: ifConnectionClosed()
     }
 
-    suspend fun fireAndForget(payload: Payload) {
-        waitConnection()
-        socket!!.fireAndForget(payload)
+    suspend fun fireAndForget(
+        payload: Payload,
+        duration: Duration = Duration.ofMinutes(5),
+        ifConnectionClosed: () -> Unit = {
+            throw IllegalStateException("Failed fireAndForget: connection is closed.")
+        }
+    ) {
+        waitConnection(duration)
+        socket?.fireAndForget(payload) ?: ifConnectionClosed()
     }
 
-    suspend fun requestResponse(payload: Payload): Payload {
-        waitConnection()
-        return socket!!.requestResponse(payload)
+    suspend fun requestResponse(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Payload? {
+        waitConnection(duration)
+        return socket?.requestResponse(payload)
     }
 
-    suspend fun requestStream(payload: Payload): Flow<Payload> {
-        waitConnection()
-        return socket!!.requestStream(payload)
+    suspend fun requestStream(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Flow<Payload>? {
+        waitConnection(duration)
+        return socket?.requestStream(payload)
     }
 
-    suspend fun requestChannel(initPayload: Payload, payloads: Flow<Payload>): Flow<Payload> {
-        waitConnection()
-        return socket!!.requestChannel(initPayload, payloads)
+    suspend fun requestChannel(
+        initPayload: Payload,
+        payloads: Flow<Payload>,
+        duration: Duration = Duration.ofMinutes(5)
+    ): Flow<Payload>? {
+        waitConnection(duration)
+        return socket?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection() {
-        while (!connected) {
-            connectionState.await()
+    private suspend fun waitConnection(duration: Duration) {
+        while (coroutineContext.isActive && !connected) {
+            val timeout = withTimeoutOrNull(duration) { connectionState.await() }
+            if (timeout == null) {
+                break
+            }
         }
     }
 }
