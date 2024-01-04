@@ -58,6 +58,7 @@ subprojects {
     publishing {
         publications {
             create<MavenPublication>(project.name) {
+                artifactId = "${rootProject.name}-${project.name}"
                 from(components["java"])
             }
         }
