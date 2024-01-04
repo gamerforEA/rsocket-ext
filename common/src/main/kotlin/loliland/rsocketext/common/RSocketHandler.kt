@@ -1,6 +1,7 @@
 package loliland.rsocketext.common
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.ExperimentalMetadataApi
@@ -102,11 +103,15 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
                 else -> jsonPayload(data = response, mapper = mapper)
             }
         } catch (e: Throwable) {
-            if (e !is InvocationTargetException) {
-                e.printStackTrace()
-            }
+            e.printStackTrace()
 
-            val message = e.message ?: "Unknown error"
+            val trace = e.stackTraceToString()
+            val traceParts = trace.split("\t").map(String::trim)
+            val message = if (traceParts.size > 1) {
+                "${traceParts[0]} ${traceParts[1]}"
+            } else {
+                trace
+            }
             errorPayload(error = ResponseError(code = message.hashCode(), message = message), mapper = mapper)
         } finally {
             request.close()
