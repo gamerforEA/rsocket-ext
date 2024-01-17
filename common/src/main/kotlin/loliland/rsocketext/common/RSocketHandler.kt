@@ -13,6 +13,7 @@ import io.rsocket.kotlin.payload.Payload
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
+import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
 import loliland.rsocketext.common.extensions.readJson
@@ -113,15 +114,21 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
             // Propagate current coroutine cancellation
             coroutineContext.ensureActive()
 
-            e.printStackTrace()
+            val message = when (e) {
+                is SilentCancellationException -> e.javaClass.name + ": " + e.message
+                else -> {
+                    e.printStackTrace()
 
-            val trace = e.stackTraceToString()
-            val traceParts = trace.split("\t").map(String::trim)
-            val message = if (traceParts.size > 1) {
-                "${traceParts[0]} ${traceParts[1]}"
-            } else {
-                trace
+                    val trace = e.stackTraceToString()
+                    val traceParts = trace.split("\t").map(String::trim)
+                    if (traceParts.size > 1) {
+                        "${traceParts[0]} ${traceParts[1]}"
+                    } else {
+                        trace
+                    }
+                }
             }
+
             errorPayload(error = ResponseError(code = message.hashCode(), message = message), mapper = mapper)
         } finally {
             request.close()
