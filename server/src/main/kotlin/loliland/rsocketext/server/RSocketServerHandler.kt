@@ -13,6 +13,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
+import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
 import java.time.Duration
@@ -64,7 +65,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     }
 
     fun close(connection: RSocketConnection<S>) {
-        connection.socket.cancel("Gracefully closed.")
+        connection.socket.cancel(SilentCancellationException("Gracefully closed."))
     }
 
     inline fun eachConnection(action: (RSocketConnection<S>) -> Unit) = connections.values.forEach(action)

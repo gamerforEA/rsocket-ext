@@ -9,6 +9,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
+import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.jsonPayload
 import java.time.Duration
 import kotlin.coroutines.coroutineContext
@@ -39,7 +40,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
     abstract fun onConnectionClosed(socket: RSocket)
 
     fun shutdown() {
-        socket?.cancel("Gracefully closed.")
+        socket?.cancel(SilentCancellationException("Gracefully closed."))
     }
 
     suspend fun metadataPush(

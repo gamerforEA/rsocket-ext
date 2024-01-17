@@ -10,12 +10,15 @@ import io.rsocket.kotlin.RSocketRequestHandler
 import io.rsocket.kotlin.core.WellKnownMimeType
 import io.rsocket.kotlin.metadata.*
 import io.rsocket.kotlin.payload.Payload
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
+import loliland.rsocketext.common.exception.ResponseException
+import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
 import loliland.rsocketext.common.extensions.readJson
-import java.lang.reflect.InvocationTargetException
+import kotlin.coroutines.coroutineContext
 import kotlin.reflect.KFunction
 import kotlin.reflect.KParameter
 import kotlin.reflect.full.*
@@ -57,64 +60,81 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
     }
 
     open suspend fun onMetadataPush(metadata: ByteReadPacket) {
-        metadataHandlers.forEach { (handler) ->
-            val packet = metadata.copy()
-            try {
-                handler.callSuspend(this, packet)
-            } catch (e: Throwable) {
-                e.printStackTrace()
-            } finally {
-                packet.close()
+        metadata.use { metadata ->
+            metadataHandlers.forEach { (handler) ->
+                metadata.copy().use { packet ->
+                    try {
+                        handler.callSuspend(this, packet)
+                    } catch (e: Throwable) {
+                        // Propagate current coroutine cancellation
+                        coroutineContext.ensureActive()
+
+                        e.printStackTrace()
+                    }
+                }
             }
         }
-        metadata.close()
     }
 
     open suspend fun onFireAndForget(request: Payload) {
-        try {
-            val metadataPayload = request.readMetadata()
-            val handler = findHandler(metadataPayload.route())
-            val payload = handler.decodeRequestData(request)
-            val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+        request.use { request ->
+            try {
+                val metadataPayload = request.readMetadata()
+                val handler = findHandler(metadataPayload.route())
+                val payload = handler.decodeRequestData(request)
+                val metadata = handler.decodeRequestMetadata(request, metadataPayload)
 
-            val thisRef = handler.parameters.first() to this
-            val args = listOfNotNull(thisRef, payload, metadata).toMap()
-            handler.callSuspendBy(args)
-        } catch (e: Throwable) {
-            e.printStackTrace()
-        } finally {
-            request.close()
+                val thisRef = handler.parameters.first() to this
+                val args = listOfNotNull(thisRef, payload, metadata).toMap()
+                handler.callSuspendBy(args)
+            } catch (e: Throwable) {
+                // Propagate current coroutine cancellation
+                coroutineContext.ensureActive()
+
+                e.printStackTrace()
+            }
         }
     }
 
     open suspend fun onRequestResponse(request: Payload): Payload {
-        return try {
-            val metadataPayload = request.readMetadata()
-            val handler = findHandler(metadataPayload.route())
-            val payload = handler.decodeRequestData(request)
-            val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+        return request.use { request ->
+            try {
+                val metadataPayload = request.readMetadata()
+                val handler = findHandler(metadataPayload.route())
+                val payload = handler.decodeRequestData(request)
+                val metadata = handler.decodeRequestMetadata(request, metadataPayload)
 
-            val thisRef = handler.parameters.first() to this
-            val args = listOfNotNull(thisRef, payload, metadata).toMap()
-            when (val response = handler.callSuspendBy(args)) {
-                is Unit -> Payload.Empty
-                is Payload -> response
-                is ResponseError -> errorPayload(error = response, mapper = mapper)
-                else -> jsonPayload(data = response, mapper = mapper)
-            }
-        } catch (e: Throwable) {
-            e.printStackTrace()
+                val thisRef = handler.parameters.first() to this
+                val args = listOfNotNull(thisRef, payload, metadata).toMap()
+                when (val response = handler.callSuspendBy(args)) {
+                    is Unit -> Payload.Empty
+                    is Payload -> response
+                    is ResponseError -> errorPayload(error = response, mapper = mapper)
+                    else -> jsonPayload(data = response, mapper = mapper)
+                }
+            } catch (e: ResponseException) {
+                errorPayload(error = e.error, mapper = mapper)
+            } catch (e: Throwable) {
+                // Propagate current coroutine cancellation
+                coroutineContext.ensureActive()
 
-            val trace = e.stackTraceToString()
-            val traceParts = trace.split("\t").map(String::trim)
-            val message = if (traceParts.size > 1) {
-                "${traceParts[0]} ${traceParts[1]}"
-            } else {
-                trace
+                val message = when (e) {
+                    is SilentCancellationException -> e.javaClass.name + ": " + e.message
+                    else -> {
+                        e.printStackTrace()
+
+                        val trace = e.stackTraceToString()
+                        val traceParts = trace.split("\t").map(String::trim)
+                        if (traceParts.size > 1) {
+                            "${traceParts[0]} ${traceParts[1]}"
+                        } else {
+                            trace
+                        }
+                    }
+                }
+
+                errorPayload(error = ResponseError(code = message.hashCode(), message = message), mapper = mapper)
             }
-            errorPayload(error = ResponseError(code = message.hashCode(), message = message), mapper = mapper)
-        } finally {
-            request.close()
         }
     }
 
