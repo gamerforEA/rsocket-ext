@@ -59,50 +59,46 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
         }
     }
 
-    open suspend fun onMetadataPush(metadata: ByteReadPacket) {
-        metadata.use { metadata ->
-            metadataHandlers.forEach { (handler) ->
-                metadata.copy().use { packet ->
-                    try {
-                        handler.callSuspend(this, packet)
-                    } catch (e: Throwable) {
-                        // Propagate current coroutine cancellation
-                        coroutineContext.ensureActive()
+    open suspend fun onMetadataPush(metadata: ByteReadPacket): Unit = metadata.use {
+        metadataHandlers.forEach { (handler) ->
+            it.copy().use { packet ->
+                try {
+                    handler.callSuspend(this, packet)
+                } catch (e: Throwable) {
+                    // Propagate current coroutine cancellation
+                    coroutineContext.ensureActive()
 
-                        e.printStackTrace()
-                    }
+                    e.printStackTrace()
                 }
             }
         }
     }
 
-    open suspend fun onFireAndForget(request: Payload) {
-        request.use { request ->
-            try {
-                val metadataPayload = request.readMetadata()
-                val handler = findHandler(metadataPayload.route())
-                val payload = handler.decodeRequestData(request)
-                val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+    open suspend fun onFireAndForget(request: Payload): Unit = request.use {
+        try {
+            val metadataPayload = it.readMetadata()
+            val handler = findHandler(metadataPayload.route())
+            val payload = handler.decodeRequestData(it)
+            val metadata = handler.decodeRequestMetadata(it, metadataPayload)
 
-                val thisRef = handler.parameters.first() to this
-                val args = listOfNotNull(thisRef, payload, metadata).toMap()
-                handler.callSuspendBy(args)
-            } catch (e: Throwable) {
-                // Propagate current coroutine cancellation
-                coroutineContext.ensureActive()
+            val thisRef = handler.parameters.first() to this
+            val args = listOfNotNull(thisRef, payload, metadata).toMap()
+            handler.callSuspendBy(args)
+        } catch (e: Throwable) {
+            // Propagate current coroutine cancellation
+            coroutineContext.ensureActive()
 
-                e.printStackTrace()
-            }
+            e.printStackTrace()
         }
     }
 
     open suspend fun onRequestResponse(request: Payload): Payload {
-        return request.use { request ->
+        return request.use {
             try {
-                val metadataPayload = request.readMetadata()
+                val metadataPayload = it.readMetadata()
                 val handler = findHandler(metadataPayload.route())
-                val payload = handler.decodeRequestData(request)
-                val metadata = handler.decodeRequestMetadata(request, metadataPayload)
+                val payload = handler.decodeRequestData(it)
+                val metadata = handler.decodeRequestMetadata(it, metadataPayload)
 
                 val thisRef = handler.parameters.first() to this
                 val args = listOfNotNull(thisRef, payload, metadata).toMap()
