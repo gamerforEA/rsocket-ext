@@ -10,12 +10,13 @@ import io.rsocket.kotlin.RSocketRequestHandler
 import io.rsocket.kotlin.core.WellKnownMimeType
 import io.rsocket.kotlin.metadata.*
 import io.rsocket.kotlin.payload.Payload
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
 import loliland.rsocketext.common.extensions.readJson
-import java.lang.reflect.InvocationTargetException
+import kotlin.coroutines.coroutineContext
 import kotlin.reflect.KFunction
 import kotlin.reflect.KParameter
 import kotlin.reflect.full.*
@@ -62,6 +63,9 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
             try {
                 handler.callSuspend(this, packet)
             } catch (e: Throwable) {
+                // Propagate current coroutine cancellation
+                coroutineContext.ensureActive()
+
                 e.printStackTrace()
             } finally {
                 packet.close()
@@ -81,6 +85,9 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
             val args = listOfNotNull(thisRef, payload, metadata).toMap()
             handler.callSuspendBy(args)
         } catch (e: Throwable) {
+            // Propagate current coroutine cancellation
+            coroutineContext.ensureActive()
+
             e.printStackTrace()
         } finally {
             request.close()
@@ -103,6 +110,9 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
                 else -> jsonPayload(data = response, mapper = mapper)
             }
         } catch (e: Throwable) {
+            // Propagate current coroutine cancellation
+            coroutineContext.ensureActive()
+
             e.printStackTrace()
 
             val trace = e.stackTraceToString()
