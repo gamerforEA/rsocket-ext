@@ -13,6 +13,7 @@ import io.rsocket.kotlin.payload.Payload
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
+import loliland.rsocketext.common.exception.ResponseException
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
@@ -111,6 +112,8 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
                     is ResponseError -> errorPayload(error = response, mapper = mapper)
                     else -> jsonPayload(data = response, mapper = mapper)
                 }
+            } catch (e: ResponseException) {
+                errorPayload(error = e.error, mapper = mapper)
             } catch (e: Throwable) {
                 // Propagate current coroutine cancellation
                 coroutineContext.ensureActive()
