@@ -1,8 +1,10 @@
 package loliland.rsocketext.common.extensions
 
+import com.fasterxml.jackson.databind.JavaType
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.type.TypeFactory
+import com.fasterxml.jackson.module.kotlin.jacksonTypeRef
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.fasterxml.jackson.module.kotlin.treeToValue
 import io.ktor.utils.io.core.*
@@ -72,15 +74,38 @@ fun errorPayload(
     mapper = mapper
 )
 
-inline fun <reified T : Any?> Payload.readValue(mapper: ObjectMapper, onError: (ResponseError) -> T): T {
-    return readValue(T::class.java, mapper, onError)
+fun readJsonOrError(payload: Payload, mapper: ObjectMapper): Any {
+    val json = payload.data.readJson<JsonNode>(mapper)
+    if (json.isObject && json.properties().size == 1 && json.has("error")) {
+        return mapper.treeToValue<ResponseError>(json["error"])
+    }
+    return json
 }
 
-@Suppress("UNCHECKED_CAST")
-inline fun <T : Any?> Payload.readValue(type: Type, mapper: ObjectMapper, onError: (ResponseError) -> T): T {
-    val json = data.readJson<JsonNode>(mapper)
-    if (json.isObject && json.properties().size == 1 && json.has("error")) {
-        return onError(mapper.treeToValue<ResponseError>(json["error"]))
+inline fun <T : Any?> Payload.readValue(
+    type: Type,
+    mapper: ObjectMapper,
+    onError: (ResponseError) -> T
+): T = readValue(mapper.typeFactory.constructType(type), mapper, onError)
+
+inline fun <T : Any?> Payload.readValue(
+    type: JavaType,
+    mapper: ObjectMapper,
+    onError: (ResponseError) -> T
+): T {
+    val value = readJsonOrError(this, mapper)
+    return if (value is JsonNode) {
+        mapper.readValue(mapper.treeAsTokens(value), type) as T
+    } else {
+        onError(value as ResponseError)
     }
-    return mapper.readValue(mapper.treeAsTokens(json), TypeFactory.rawClass(type)) as T
+}
+
+inline fun <reified T : Any?> Payload.readValue(mapper: ObjectMapper, onError: (ResponseError) -> T): T {
+    val value = readJsonOrError(this, mapper)
+    return if (value is JsonNode) {
+        mapper.readValue(mapper.treeAsTokens(value), jacksonTypeRef<T>())
+    } else {
+        onError(value as ResponseError)
+    }
 }
