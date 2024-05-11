@@ -20,7 +20,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
     private val socket = AtomicReference<RSocket?>()
 
     val connected get() = socket.get()?.isActive == true
-    private val connectionState = AtomicReference<CompletableDeferred<Unit>>()
+    private val connectionState = AtomicReference<CompletableDeferred<Unit>>(CompletableDeferred())
 
     final override fun setupConnection(ctx: ConnectionAcceptorContext) {
         val socket = ctx.requester
