@@ -12,24 +12,29 @@ import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.jsonPayload
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
 
 abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
-    private var socket: RSocket? = null
+    private val socket = AtomicReference<RSocket?>()
 
-    val connected get() = socket?.isActive == true
-    private var connectionState = CompletableDeferred<Unit>()
+    val connected get() = socket.get()?.isActive == true
+    private val connectionState = AtomicReference<CompletableDeferred<Unit>>()
 
     final override fun setupConnection(ctx: ConnectionAcceptorContext) {
-        socket = ctx.requester
+        val socket = ctx.requester
+        this.socket.set(socket)
+
         onConnectionSetup(ctx)
+
+        val connectionState = this.connectionState.get()
         connectionState.complete(Unit)
 
         ctx.requester.coroutineContext.job.invokeOnCompletion {
-            connectionState = CompletableDeferred()
-            socket?.also(::onConnectionClosed)
-            socket = null
+            this.connectionState.compareAndSet(connectionState, CompletableDeferred())
+            socket.also(::onConnectionClosed)
+            this.socket.compareAndSet(socket, null)
         }
     }
 
@@ -40,7 +45,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
     abstract fun onConnectionClosed(socket: RSocket)
 
     fun shutdown() {
-        socket?.cancel(SilentCancellationException("Gracefully closed."))
+        socket.get()?.cancel(SilentCancellationException("Gracefully closed."))
     }
 
     suspend fun metadataPush(
@@ -51,7 +56,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         }
     ) {
         waitConnection(duration)
-        socket?.metadataPush(metadata) ?: ifConnectionClosed()
+        socket.get()?.metadataPush(metadata) ?: ifConnectionClosed()
     }
 
     suspend fun fireAndForget(
@@ -62,17 +67,17 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         }
     ) {
         waitConnection(duration)
-        socket?.fireAndForget(payload) ?: ifConnectionClosed()
+        socket.get()?.fireAndForget(payload) ?: ifConnectionClosed()
     }
 
     suspend fun requestResponse(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Payload? {
         waitConnection(duration)
-        return socket?.requestResponse(payload)
+        return socket.get()?.requestResponse(payload)
     }
 
     suspend fun requestStream(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Flow<Payload>? {
         waitConnection(duration)
-        return socket?.requestStream(payload)
+        return socket.get()?.requestStream(payload)
     }
 
     suspend fun requestChannel(
@@ -81,12 +86,12 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         duration: Duration = Duration.ofMinutes(5)
     ): Flow<Payload>? {
         waitConnection(duration)
-        return socket?.requestChannel(initPayload, payloads)
+        return socket.get()?.requestChannel(initPayload, payloads)
     }
 
     private suspend fun waitConnection(duration: Duration) {
         while (coroutineContext.isActive && !connected) {
-            val timeout = withTimeoutOrNull(duration) { connectionState.await() }
+            val timeout = withTimeoutOrNull(duration) { connectionState.get().await() }
             if (timeout == null) {
                 break
             }
