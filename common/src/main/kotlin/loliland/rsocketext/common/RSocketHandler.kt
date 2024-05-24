@@ -1,7 +1,6 @@
 package loliland.rsocketext.common
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.ExperimentalMetadataApi
@@ -18,7 +17,9 @@ import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
 import loliland.rsocketext.common.extensions.readJson
+import java.lang.reflect.InvocationTargetException
 import kotlin.coroutines.coroutineContext
+import kotlin.reflect.KCallable
 import kotlin.reflect.KFunction
 import kotlin.reflect.KParameter
 import kotlin.reflect.full.*
@@ -83,7 +84,8 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
             val thisRef = handler.parameters.first() to this
             val args = listOfNotNull(thisRef, payload, metadata).toMap()
-            handler.callSuspendBy(args)
+            handler.callSuspendByAndUnwrapResponseException(args)
+        } catch (_: ResponseException) {
         } catch (e: Throwable) {
             // Propagate current coroutine cancellation
             coroutineContext.ensureActive()
@@ -102,7 +104,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
                 val thisRef = handler.parameters.first() to this
                 val args = listOfNotNull(thisRef, payload, metadata).toMap()
-                when (val response = handler.callSuspendBy(args)) {
+                when (val response = handler.callSuspendByAndUnwrapResponseException(args)) {
                     is Unit -> Payload.Empty
                     is Payload -> response
                     is ResponseError -> errorPayload(error = response, mapper = mapper)
@@ -209,4 +211,18 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
     private inline fun <reified A : Annotation> findHandlers(): List<Pair<KFunction<*>, A>> =
         this::class.functions.filter { it.hasAnnotation<A>() }.map { it to it.findAnnotation<A>()!! }
+
+    private suspend fun <R> KCallable<R>.callSuspendByAndUnwrapResponseException(args: Map<KParameter, Any?>): R {
+        try {
+            return this.callSuspendBy(args)
+        } catch (e: InvocationTargetException) {
+            val cause = e.cause
+
+            if (cause is ResponseException) {
+                throw cause
+            } else {
+                throw e
+            }
+        }
+    }
 }
