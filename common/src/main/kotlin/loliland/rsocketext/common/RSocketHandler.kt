@@ -69,6 +69,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
                     // Propagate current coroutine cancellation
                     coroutineContext.ensureActive()
 
+                    // TODO Use logging library
                     e.printStackTrace()
                 }
             }
@@ -76,9 +77,12 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
     }
 
     open suspend fun onFireAndForget(request: Payload): Unit = request.use {
+        var route: String? = "<unknown>"
+
         try {
             val metadataPayload = it.readMetadata()
-            val handler = findHandler(metadataPayload.route())
+            route = metadataPayload.route()
+            val handler = findHandler(route)
             val payload = handler.decodeRequestData(it)
             val metadata = handler.decodeRequestMetadata(it, metadataPayload)
 
@@ -90,15 +94,20 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
             // Propagate current coroutine cancellation
             coroutineContext.ensureActive()
 
+            // TODO Use logging library
+            System.err.println("Failed to handle onFireAndForget($route) request")
             e.printStackTrace()
         }
     }
 
     open suspend fun onRequestResponse(request: Payload): Payload {
         return request.use {
+            var route: String? = "<unknown>"
+
             try {
                 val metadataPayload = it.readMetadata()
-                val handler = findHandler(metadataPayload.route())
+                route = metadataPayload.route()
+                val handler = findHandler(route)
                 val payload = handler.decodeRequestData(it)
                 val metadata = handler.decodeRequestMetadata(it, metadataPayload)
 
@@ -119,6 +128,8 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
                 val message = when (e) {
                     is SilentCancellationException -> e.javaClass.name + ": " + e.message
                     else -> {
+                        // TODO Use logging library
+                        System.err.println("Failed to handle onRequestResponse($route) request")
                         e.printStackTrace()
 
                         val trace = e.stackTraceToString()
