@@ -19,12 +19,13 @@ import java.lang.reflect.ParameterizedType
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.set
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 
 abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
     val connections = ConcurrentHashMap<String, RSocketConnection<S>>()
-    private val connectionsStates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val connectionsStates = ConcurrentHashMap<String, ConnectionState>()
 
     private val setupDataType = (javaClass.getGenericSuperclass() as ParameterizedType).actualTypeArguments[0]
 
@@ -35,20 +36,29 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         }
 
         val connection = RSocketConnection(ctx.requester, setupData)
-        if (canConnectable(connection)) {
-            connections[setupData.name] = connection
-            connectionsStates[setupData.name]?.complete(Unit)
-        } else {
+        if (!canConnectable(connection)) {
             connection.socket.cancel("Forbidden connection.")
             return
         }
 
-        onConnectionSetup(connection)
+        val connectionName = setupData.name
+        val state = connectionsStates.computeIfAbsent(connectionName) { ConnectionState() }
+
+        synchronized(state) {
+            connections[connectionName] = connection
+            state.waitMutex?.complete(Unit)
+
+            onConnectionSetup(connection)
+        }
 
         ctx.requester.coroutineContext.job.invokeOnCompletion {
-            connectionsStates[setupData.name] = CompletableDeferred()
-            connections -= setupData.name
-            onConnectionClosed(connection, it)
+            synchronized(state) {
+                if (connections.remove(connectionName, connection)) {
+                    state.waitMutex = CompletableDeferred()
+                }
+
+                onConnectionClosed(connection, it)
+            }
         }
     }
 
@@ -133,7 +143,8 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
             if (socket?.isActive == true) {
                 return socket
             }
-            val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
+            val state =
+                connectionsStates[connectionName]?.waitMutex ?: error("Unknown connection with name: $connectionName")
 
             val timeout = withTimeoutOrNull(duration) { state.await() }
             if (timeout == null) {
@@ -142,5 +153,10 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         }
 
         return null
+    }
+
+    private class ConnectionState {
+        @Volatile
+        var waitMutex: CompletableDeferred<Unit>? = null
     }
 }
