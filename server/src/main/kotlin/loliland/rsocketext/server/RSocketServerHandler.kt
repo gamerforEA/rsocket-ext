@@ -135,11 +135,8 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     }
 
     private suspend fun waitConnection(connectionName: String, timeout: Duration): RSocket? {
-        val socket = connections[connectionName]?.socket
-        if (socket?.isActive == true) {
-            // Fast path
-            return socket
-        }
+        // Fast path
+        getActiveSocket(connectionName)?.let { return@waitConnection it }
 
         val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
 
@@ -155,10 +152,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
 
         return withTimeoutOrNull(untilDeadline) {
             while (isActive) {
-                val socket = connections[connectionName]?.socket
-                if (socket?.isActive == true) {
-                    return@withTimeoutOrNull socket
-                }
+                getActiveSocket(connectionName)?.let { return@withTimeoutOrNull it }
 
                 val mutex = state.disconnectData.get()?.connectMutex ?: break
                 mutex.await()
@@ -166,6 +160,11 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
 
             return@withTimeoutOrNull null
         }
+    }
+
+    private fun getActiveSocket(connectionName: String): RSocket? {
+        val socket = connections[connectionName]?.socket
+        return if (socket?.isActive == true) socket else null
     }
 
     private class ConnectionState {

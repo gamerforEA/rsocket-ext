@@ -94,19 +94,12 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
     }
 
     private suspend fun waitConnection(timeout: Duration): RSocket? {
-        val socket = getActiveSocket()
-        if (socket != null) {
-            // Fast path
-            return socket
-        }
+        // Fast path
+        getActiveSocket()?.let { return@waitConnection it }
 
         return withTimeoutOrNull(timeout) {
             while (isActive) {
-                val socket = getActiveSocket()
-                if (socket != null) {
-                    return@withTimeoutOrNull socket
-                }
-
+                getActiveSocket()?.let { return@withTimeoutOrNull socket }
                 connectionState.await()
             }
 
