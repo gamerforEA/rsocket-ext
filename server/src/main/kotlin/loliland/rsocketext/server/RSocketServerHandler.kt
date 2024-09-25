@@ -80,7 +80,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun metadataPush(
         connectionName: String,
         metadata: ByteReadPacket,
-        timeout: Duration = DEFAULT_TIMEOUT,
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
@@ -96,7 +96,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun fireAndForget(
         connectionName: String,
         payload: Payload,
-        timeout: Duration = DEFAULT_TIMEOUT,
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
@@ -112,7 +112,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun requestResponse(
         connectionName: String,
         payload: Payload,
-        timeout: Duration = DEFAULT_TIMEOUT
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Payload? {
         return waitConnection(connectionName, timeout)?.requestResponse(payload)
     }
@@ -120,7 +120,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun requestStream(
         connectionName: String,
         payload: Payload,
-        timeout: Duration = DEFAULT_TIMEOUT
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
         return waitConnection(connectionName, timeout)?.requestStream(payload)
     }
@@ -129,16 +129,20 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         connectionName: String,
         initPayload: Payload,
         payloads: Flow<Payload>,
-        timeout: Duration = DEFAULT_TIMEOUT
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
         return waitConnection(connectionName, timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(connectionName: String, timeout: Duration): RSocket? {
+    private suspend fun waitConnection(connectionName: String, timeout: Duration?): RSocket? {
         // Fast path
         getActiveSocket(connectionName)?.let { return@waitConnection it }
 
         val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
+
+        if (timeout == null) {
+            return null
+        }
 
         val untilDeadline = run {
             val disconnectTime = state.disconnectData.get()?.disconnectTime ?: return null
