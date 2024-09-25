@@ -5,18 +5,14 @@ import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.job
-import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.jsonPayload
-import java.time.Duration
 import kotlin.concurrent.Volatile
-import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
 abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -63,52 +59,61 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
 
     suspend fun metadataPush(
         metadata: ByteReadPacket,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
     ) {
-        waitConnection(duration)
-        socket?.metadataPush(metadata) ?: ifConnectionClosed()
+        waitConnection(timeout)?.metadataPush(metadata) ?: ifConnectionClosed()
     }
 
     suspend fun fireAndForget(
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
     ) {
-        waitConnection(duration)
-        socket?.fireAndForget(payload) ?: ifConnectionClosed()
+        waitConnection(timeout)?.fireAndForget(payload) ?: ifConnectionClosed()
     }
 
-    suspend fun requestResponse(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Payload? {
-        waitConnection(duration)
-        return socket?.requestResponse(payload)
+    suspend fun requestResponse(payload: Payload, timeout: Duration? = DEFAULT_TIMEOUT): Payload? {
+        return waitConnection(timeout)?.requestResponse(payload)
     }
 
-    suspend fun requestStream(payload: Payload, duration: Duration = Duration.ofMinutes(5)): Flow<Payload>? {
-        waitConnection(duration)
-        return socket?.requestStream(payload)
+    suspend fun requestStream(payload: Payload, timeout: Duration? = DEFAULT_TIMEOUT): Flow<Payload>? {
+        return waitConnection(timeout)?.requestStream(payload)
     }
 
     suspend fun requestChannel(
         initPayload: Payload,
         payloads: Flow<Payload>,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        waitConnection(duration)
-        return socket?.requestChannel(initPayload, payloads)
+        return waitConnection(timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(duration: Duration) {
-        while (coroutineContext.isActive && !connected) {
-            val timeout = withTimeoutOrNull(duration) { connectionState.await() }
-            if (timeout == null) {
-                break
+    private suspend fun waitConnection(timeout: Duration?): RSocket? {
+        // Fast path
+        getActiveSocket()?.let { return@waitConnection it }
+
+        return if (timeout == null) null else withTimeoutOrNull(timeout) {
+            while (isActive) {
+                getActiveSocket()?.let { return@withTimeoutOrNull socket }
+                connectionState.await()
             }
+
+            return@withTimeoutOrNull null
         }
+    }
+
+    private fun getActiveSocket(): RSocket? {
+        val socket = socket
+        return if (socket?.isActive == true) socket else null
+    }
+
+    companion object {
+        private val DEFAULT_TIMEOUT = 5.minutes
     }
 }
 

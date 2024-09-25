@@ -5,22 +5,19 @@ import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.job
-import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
-import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.collections.set
-import kotlin.concurrent.Volatile
-import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TimeSource
 
 abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -46,7 +43,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
 
         synchronized(state) {
             connections[connectionName] = connection
-            state.waitMutex?.complete(Unit)
+            state.onConnect()
 
             onConnectionSetup(connection)
         }
@@ -54,7 +51,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         ctx.requester.coroutineContext.job.invokeOnCompletion {
             synchronized(state) {
                 if (connections.remove(connectionName, connection)) {
-                    state.waitMutex = CompletableDeferred()
+                    state.onDisconnect()
                 }
 
                 onConnectionClosed(connection, it)
@@ -83,12 +80,12 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun metadataPush(
         connectionName: String,
         metadata: ByteReadPacket,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
     ) {
-        val connection = waitConnection(connectionName, duration)
+        val connection = waitConnection(connectionName, timeout)
         if (connection != null) {
             connection.metadataPush(metadata)
         } else {
@@ -99,12 +96,12 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun fireAndForget(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration? = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
     ) {
-        val connection = waitConnection(connectionName, duration)
+        val connection = waitConnection(connectionName, timeout)
         if (connection != null) {
             connection.fireAndForget(payload)
         } else {
@@ -115,48 +112,81 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun requestResponse(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Payload? {
-        return waitConnection(connectionName, duration)?.requestResponse(payload)
+        return waitConnection(connectionName, timeout)?.requestResponse(payload)
     }
 
     suspend fun requestStream(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        return waitConnection(connectionName, duration)?.requestStream(payload)
+        return waitConnection(connectionName, timeout)?.requestStream(payload)
     }
 
     suspend fun requestChannel(
         connectionName: String,
         initPayload: Payload,
         payloads: Flow<Payload>,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration? = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        return waitConnection(connectionName, duration)?.requestChannel(initPayload, payloads)
+        return waitConnection(connectionName, timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(connectionName: String, duration: Duration): RSocket? {
-        while (coroutineContext.isActive) {
-            val socket = connections[connectionName]?.socket
-            if (socket?.isActive == true) {
-                return socket
-            }
-            val state =
-                connectionsStates[connectionName]?.waitMutex ?: error("Unknown connection with name: $connectionName")
+    private suspend fun waitConnection(connectionName: String, timeout: Duration?): RSocket? {
+        // Fast path
+        getActiveSocket(connectionName)?.let { return@waitConnection it }
 
-            val timeout = withTimeoutOrNull(duration) { state.await() }
-            if (timeout == null) {
-                break
-            }
+        val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
+
+        if (timeout == null) {
+            return null
         }
 
-        return null
+        val untilDeadline = run {
+            val disconnectTime = state.disconnectData.get()?.disconnectTime ?: return null
+            val deadline = disconnectTime + timeout
+            deadline - TimeSource.Monotonic.markNow()
+        }
+
+        if (!untilDeadline.isPositive()) {
+            return null
+        }
+
+        return withTimeoutOrNull(untilDeadline) {
+            while (isActive) {
+                getActiveSocket(connectionName)?.let { return@withTimeoutOrNull it }
+
+                val mutex = state.disconnectData.get()?.connectMutex ?: break
+                mutex.await()
+            }
+
+            return@withTimeoutOrNull null
+        }
+    }
+
+    private fun getActiveSocket(connectionName: String): RSocket? {
+        val socket = connections[connectionName]?.socket
+        return if (socket?.isActive == true) socket else null
     }
 
     private class ConnectionState {
-        @Volatile
-        var waitMutex: CompletableDeferred<Unit>? = null
+        val disconnectData = AtomicReference<DisconnectData?>()
+
+        fun onConnect() {
+            disconnectData.get()?.connectMutex?.complete(Unit)
+        }
+
+        fun onDisconnect() = disconnectData.set(DisconnectData())
+    }
+
+    private class DisconnectData {
+        val disconnectTime = TimeSource.Monotonic.markNow()
+        val connectMutex = CompletableDeferred<Unit>()
+    }
+
+    companion object {
+        private val DEFAULT_TIMEOUT = 5.minutes
     }
 }
