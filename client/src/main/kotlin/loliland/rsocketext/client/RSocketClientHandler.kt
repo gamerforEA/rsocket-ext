@@ -11,7 +11,6 @@ import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.jsonPayload
 import kotlin.concurrent.Volatile
-import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
@@ -65,8 +64,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
     ) {
-        waitConnection(timeout)
-        socket?.metadataPush(metadata) ?: ifConnectionClosed()
+        waitConnection(timeout)?.metadataPush(metadata) ?: ifConnectionClosed()
     }
 
     suspend fun fireAndForget(
@@ -76,18 +74,15 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
     ) {
-        waitConnection(timeout)
-        socket?.fireAndForget(payload) ?: ifConnectionClosed()
+        waitConnection(timeout)?.fireAndForget(payload) ?: ifConnectionClosed()
     }
 
     suspend fun requestResponse(payload: Payload, timeout: Duration = DEFAULT_TIMEOUT): Payload? {
-        waitConnection(timeout)
-        return socket?.requestResponse(payload)
+        return waitConnection(timeout)?.requestResponse(payload)
     }
 
     suspend fun requestStream(payload: Payload, timeout: Duration = DEFAULT_TIMEOUT): Flow<Payload>? {
-        waitConnection(timeout)
-        return socket?.requestStream(payload)
+        return waitConnection(timeout)?.requestStream(payload)
     }
 
     suspend fun requestChannel(
@@ -95,17 +90,33 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         payloads: Flow<Payload>,
         timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        waitConnection(timeout)
-        return socket?.requestChannel(initPayload, payloads)
+        return waitConnection(timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(timeout: Duration) {
-        while (coroutineContext.isActive && !connected) {
-            val timeoutResult = withTimeoutOrNull(timeout) { connectionState.await() }
-            if (timeoutResult == null) {
-                break
-            }
+    private suspend fun waitConnection(timeout: Duration): RSocket? {
+        val socket = getActiveSocket()
+        if (socket != null) {
+            // Fast path
+            return socket
         }
+
+        return withTimeoutOrNull(timeout) {
+            while (isActive) {
+                val socket = getActiveSocket()
+                if (socket != null) {
+                    return@withTimeoutOrNull socket
+                }
+
+                connectionState.await()
+            }
+
+            return@withTimeoutOrNull null
+        }
+    }
+
+    private fun getActiveSocket(): RSocket? {
+        val socket = socket
+        return if (socket?.isActive == true) socket else null
     }
 
     companion object {
