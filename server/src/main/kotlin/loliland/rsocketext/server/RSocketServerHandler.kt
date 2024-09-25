@@ -13,11 +13,11 @@ import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.collections.set
-import kotlin.concurrent.Volatile
-import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TimeSource
 
 abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -43,7 +43,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
 
         synchronized(state) {
             connections[connectionName] = connection
-            state.waitMutex?.complete(Unit)
+            state.onConnect()
 
             onConnectionSetup(connection)
         }
@@ -51,7 +51,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
         ctx.requester.coroutineContext.job.invokeOnCompletion {
             synchronized(state) {
                 if (connections.remove(connectionName, connection)) {
-                    state.waitMutex = CompletableDeferred()
+                    state.onDisconnect()
                 }
 
                 onConnectionClosed(connection, it)
@@ -135,26 +135,52 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     }
 
     private suspend fun waitConnection(connectionName: String, timeout: Duration): RSocket? {
-        while (coroutineContext.isActive) {
-            val socket = connections[connectionName]?.socket
-            if (socket?.isActive == true) {
-                return socket
-            }
-            val state =
-                connectionsStates[connectionName]?.waitMutex ?: error("Unknown connection with name: $connectionName")
-
-            val timeoutResult = withTimeoutOrNull(timeout) { state.await() }
-            if (timeoutResult == null) {
-                break
-            }
+        val socket = connections[connectionName]?.socket
+        if (socket?.isActive == true) {
+            // Fast path
+            return socket
         }
 
-        return null
+        val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
+
+        val untilDeadline = run {
+            val disconnectTime = state.disconnectData.get()?.disconnectTime ?: return null
+            val deadline = disconnectTime + timeout
+            deadline - TimeSource.Monotonic.markNow()
+        }
+
+        if (!untilDeadline.isPositive()) {
+            return null
+        }
+
+        return withTimeoutOrNull(untilDeadline) {
+            while (isActive) {
+                val socket = connections[connectionName]?.socket
+                if (socket?.isActive == true) {
+                    return@withTimeoutOrNull socket
+                }
+
+                val mutex = state.disconnectData.get()?.connectMutex ?: break
+                mutex.await()
+            }
+
+            return@withTimeoutOrNull null
+        }
     }
 
     private class ConnectionState {
-        @Volatile
-        var waitMutex: CompletableDeferred<Unit>? = null
+        val disconnectData = AtomicReference<DisconnectData?>()
+
+        fun onConnect() {
+            disconnectData.get()?.connectMutex?.complete(Unit)
+        }
+
+        fun onDisconnect() = disconnectData.set(DisconnectData())
+    }
+
+    private class DisconnectData {
+        val disconnectTime = TimeSource.Monotonic.markNow()
+        val connectMutex = CompletableDeferred<Unit>()
     }
 
     companion object {
