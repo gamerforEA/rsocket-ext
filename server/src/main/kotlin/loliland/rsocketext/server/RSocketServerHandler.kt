@@ -5,22 +5,19 @@ import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.job
-import kotlinx.coroutines.time.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
-import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.set
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
 abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
@@ -83,12 +80,12 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun metadataPush(
         connectionName: String,
         metadata: ByteReadPacket,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
     ) {
-        val connection = waitConnection(connectionName, duration)
+        val connection = waitConnection(connectionName, timeout)
         if (connection != null) {
             connection.metadataPush(metadata)
         } else {
@@ -99,12 +96,12 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun fireAndForget(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5),
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
     ) {
-        val connection = waitConnection(connectionName, duration)
+        val connection = waitConnection(connectionName, timeout)
         if (connection != null) {
             connection.fireAndForget(payload)
         } else {
@@ -115,29 +112,29 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     suspend fun requestResponse(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Payload? {
-        return waitConnection(connectionName, duration)?.requestResponse(payload)
+        return waitConnection(connectionName, timeout)?.requestResponse(payload)
     }
 
     suspend fun requestStream(
         connectionName: String,
         payload: Payload,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        return waitConnection(connectionName, duration)?.requestStream(payload)
+        return waitConnection(connectionName, timeout)?.requestStream(payload)
     }
 
     suspend fun requestChannel(
         connectionName: String,
         initPayload: Payload,
         payloads: Flow<Payload>,
-        duration: Duration = Duration.ofMinutes(5)
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
-        return waitConnection(connectionName, duration)?.requestChannel(initPayload, payloads)
+        return waitConnection(connectionName, timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(connectionName: String, duration: Duration): RSocket? {
+    private suspend fun waitConnection(connectionName: String, timeout: Duration): RSocket? {
         while (coroutineContext.isActive) {
             val socket = connections[connectionName]?.socket
             if (socket?.isActive == true) {
@@ -146,8 +143,8 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
             val state =
                 connectionsStates[connectionName]?.waitMutex ?: error("Unknown connection with name: $connectionName")
 
-            val timeout = withTimeoutOrNull(duration) { state.await() }
-            if (timeout == null) {
+            val timeoutResult = withTimeoutOrNull(timeout) { state.await() }
+            if (timeoutResult == null) {
                 break
             }
         }
@@ -158,5 +155,9 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSock
     private class ConnectionState {
         @Volatile
         var waitMutex: CompletableDeferred<Unit>? = null
+    }
+
+    companion object {
+        private val DEFAULT_TIMEOUT = 5.minutes
     }
 }
