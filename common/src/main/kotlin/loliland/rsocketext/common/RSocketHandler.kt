@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.dto.ResponseError
 import loliland.rsocketext.common.exception.ResponseException
 import loliland.rsocketext.common.exception.SilentCancellationException
+import loliland.rsocketext.common.extensions.RequestTracker
 import loliland.rsocketext.common.extensions.errorPayload
 import loliland.rsocketext.common.extensions.jsonPayload
 import loliland.rsocketext.common.extensions.readJson
@@ -28,7 +29,7 @@ import kotlin.reflect.typeOf
 
 @Suppress("DuplicatedCode")
 @OptIn(ExperimentalMetadataApi::class)
-abstract class RSocketHandler(val mapper: ObjectMapper) {
+abstract class RSocketHandler(val mapper: ObjectMapper, val tracker: RequestTracker? = null) {
 
     private val routeHandlers = findHandlers<RSocketRoute>()
     private val metadataHandlers = findHandlers<RSocketMetadata>()
@@ -77,7 +78,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
     }
 
     open suspend fun onFireAndForget(request: Payload): Unit = request.use {
-        var route: String? = "<unknown>"
+        var route = "<unknown>"
 
         try {
             val metadataPayload = it.readMetadata()
@@ -88,7 +89,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
             val thisRef = handler.parameters.first() to this
             val args = listOfNotNull(thisRef, payload, metadata).toMap()
-            handler.callSuspendByAndUnwrapResponseException(args)
+            handler.callSuspendByAndUnwrapResponseException(route, args)
         } catch (_: ResponseException) {
         } catch (e: Throwable) {
             // Propagate current coroutine cancellation
@@ -102,7 +103,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
     open suspend fun onRequestResponse(request: Payload): Payload {
         return request.use {
-            var route: String? = "<unknown>"
+            var route = "<unknown>"
 
             try {
                 val metadataPayload = it.readMetadata()
@@ -113,7 +114,7 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
 
                 val thisRef = handler.parameters.first() to this
                 val args = listOfNotNull(thisRef, payload, metadata).toMap()
-                when (val response = handler.callSuspendByAndUnwrapResponseException(args)) {
+                when (val response = handler.callSuspendByAndUnwrapResponseException(route, args)) {
                     is Unit -> Payload.Empty
                     is Payload -> response
                     is ResponseError -> errorPayload(error = response, mapper = mapper)
@@ -223,9 +224,16 @@ abstract class RSocketHandler(val mapper: ObjectMapper) {
     private inline fun <reified A : Annotation> findHandlers(): List<Pair<KFunction<*>, A>> =
         this::class.functions.filter { it.hasAnnotation<A>() }.map { it to it.findAnnotation<A>()!! }
 
-    private suspend fun <R> KCallable<R>.callSuspendByAndUnwrapResponseException(args: Map<KParameter, Any?>): R {
+    private suspend fun <R> KCallable<R>.callSuspendByAndUnwrapResponseException(
+        route: String,
+        args: Map<KParameter, Any?>
+    ): R {
         try {
-            return this.callSuspendBy(args)
+            return if (tracker != null) {
+                tracker.execute(route) { callSuspendBy(args) }
+            } else {
+                callSuspendBy(args)
+            }
         } catch (e: InvocationTargetException) {
             val cause = e.cause
 

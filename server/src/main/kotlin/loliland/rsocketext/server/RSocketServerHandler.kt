@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
 import loliland.rsocketext.common.exception.SilentCancellationException
+import loliland.rsocketext.common.extensions.RequestTracker
 import loliland.rsocketext.common.extensions.readValue
 import java.lang.reflect.ParameterizedType
 import java.util.concurrent.ConcurrentHashMap
@@ -19,7 +20,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeSource
 
-abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper) : RSocketHandler(mapper) {
+abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker: RequestTracker? = null) :
+    RSocketHandler(mapper, tracker) {
 
     val connections = ConcurrentHashMap<String, RSocketConnection<S>>()
     private val connectionsStates = ConcurrentHashMap<String, ConnectionState>()
