@@ -87,7 +87,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
     suspend fun metadataPush(
         connectionName: String,
         metadata: ByteReadPacket,
-        timeout: Duration? = DEFAULT_TIMEOUT,
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
@@ -103,7 +103,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
     suspend fun fireAndForget(
         connectionName: String,
         payload: Payload,
-        timeout: Duration? = DEFAULT_TIMEOUT,
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
@@ -119,7 +119,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
     suspend fun requestResponse(
         connectionName: String,
         payload: Payload,
-        timeout: Duration? = DEFAULT_TIMEOUT
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Payload? {
         return waitConnection(connectionName, timeout)?.requestResponse(payload)
     }
@@ -127,7 +127,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
     suspend fun requestStream(
         connectionName: String,
         payload: Payload,
-        timeout: Duration? = DEFAULT_TIMEOUT
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
         return waitConnection(connectionName, timeout)?.requestStream(payload)
     }
@@ -136,18 +136,18 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
         connectionName: String,
         initPayload: Payload,
         payloads: Flow<Payload>,
-        timeout: Duration? = DEFAULT_TIMEOUT
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
         return waitConnection(connectionName, timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(connectionName: String, timeout: Duration?): RSocket? {
+    private suspend fun waitConnection(connectionName: String, timeout: Duration): RSocket? {
         // Fast path
         connections[connectionName]?.socket?.also { if (it.isActive) return@waitConnection it }
 
         val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
 
-        if (timeout == null) {
+        if (!timeout.isPositive()) {
             return null
         }
 
@@ -157,11 +157,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
             deadline - TimeSource.Monotonic.markNow()
         }
 
-        if (!untilDeadline.isPositive()) {
-            return null
-        }
-
-        return withTimeoutOrNull(untilDeadline) {
+        return if (!untilDeadline.isPositive()) null else withTimeoutOrNull(untilDeadline) {
             state.socket.firstOrNull { it?.isActive == true }
         }
     }

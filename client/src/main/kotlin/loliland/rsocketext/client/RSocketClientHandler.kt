@@ -53,7 +53,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
 
     suspend fun metadataPush(
         metadata: ByteReadPacket,
-        timeout: Duration? = DEFAULT_TIMEOUT,
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed metadataPush: connection is closed.")
         }
@@ -63,7 +63,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
 
     suspend fun fireAndForget(
         payload: Payload,
-        timeout: Duration? = DEFAULT_TIMEOUT,
+        timeout: Duration = DEFAULT_TIMEOUT,
         ifConnectionClosed: () -> Unit = {
             throw IllegalStateException("Failed fireAndForget: connection is closed.")
         }
@@ -71,27 +71,27 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
         waitConnection(timeout)?.fireAndForget(payload) ?: ifConnectionClosed()
     }
 
-    suspend fun requestResponse(payload: Payload, timeout: Duration? = DEFAULT_TIMEOUT): Payload? {
+    suspend fun requestResponse(payload: Payload, timeout: Duration = DEFAULT_TIMEOUT): Payload? {
         return waitConnection(timeout)?.requestResponse(payload)
     }
 
-    suspend fun requestStream(payload: Payload, timeout: Duration? = DEFAULT_TIMEOUT): Flow<Payload>? {
+    suspend fun requestStream(payload: Payload, timeout: Duration = DEFAULT_TIMEOUT): Flow<Payload>? {
         return waitConnection(timeout)?.requestStream(payload)
     }
 
     suspend fun requestChannel(
         initPayload: Payload,
         payloads: Flow<Payload>,
-        timeout: Duration? = DEFAULT_TIMEOUT
+        timeout: Duration = DEFAULT_TIMEOUT
     ): Flow<Payload>? {
         return waitConnection(timeout)?.requestChannel(initPayload, payloads)
     }
 
-    private suspend fun waitConnection(timeout: Duration?): RSocket? {
+    private suspend fun waitConnection(timeout: Duration): RSocket? {
         // Fast path
         socket.value?.also { if (it.isActive) return@waitConnection it }
 
-        return if (timeout == null) null else withTimeoutOrNull(timeout) {
+        return if (!timeout.isPositive()) null else withTimeoutOrNull(timeout) {
             socket.firstOrNull { it?.isActive == true }
         }
     }
