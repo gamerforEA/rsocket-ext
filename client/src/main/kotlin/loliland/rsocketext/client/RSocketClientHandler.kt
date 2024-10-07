@@ -5,43 +5,37 @@ import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
-import kotlinx.coroutines.*
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.exception.SilentCancellationException
 import loliland.rsocketext.common.extensions.jsonPayload
-import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
 abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mapper) {
 
-    @Volatile
-    private var socket: RSocket? = null
+    private val socket = MutableStateFlow<RSocket?>(null)
 
-    val connected get() = socket?.isActive == true
-
-    @Volatile
-    private var connectionState = CompletableDeferred<Unit>()
+    val connected get() = socket.value?.isActive == true
 
     final override fun setupConnection(ctx: ConnectionAcceptorContext) {
         val socket = ctx.requester
 
         synchronized(this) {
-            this.socket = socket
-
             onConnectionSetup(ctx)
-
-            this.connectionState.complete(Unit)
+            this.socket.value = socket
         }
 
         ctx.requester.coroutineContext.job.invokeOnCompletion {
             synchronized(this) {
-                if (this.socket == socket) {
-                    this.socket = null
-                    this.connectionState = CompletableDeferred()
-                }
-
+                // this.socket.compareAndSet(socket, null) - было бы полезно для очистки памяти, но придётся
+                // лишний раз будить ждущие в waitConnection корутины.
                 onConnectionClosed(socket)
             }
         }
@@ -54,7 +48,7 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
     abstract fun onConnectionClosed(socket: RSocket)
 
     fun shutdown() {
-        socket?.cancel(SilentCancellationException("Gracefully closed."))
+        socket.value?.cancel(SilentCancellationException("Gracefully closed."))
     }
 
     suspend fun metadataPush(
@@ -95,21 +89,11 @@ abstract class RSocketClientHandler(mapper: ObjectMapper) : RSocketHandler(mappe
 
     private suspend fun waitConnection(timeout: Duration?): RSocket? {
         // Fast path
-        getActiveSocket()?.let { return@waitConnection it }
+        socket.value?.also { if (it.isActive) return@waitConnection it }
 
         return if (timeout == null) null else withTimeoutOrNull(timeout) {
-            while (isActive) {
-                getActiveSocket()?.let { return@withTimeoutOrNull socket }
-                connectionState.await()
-            }
-
-            return@withTimeoutOrNull null
+            socket.firstOrNull { it?.isActive == true }
         }
-    }
-
-    private fun getActiveSocket(): RSocket? {
-        val socket = socket
-        return if (socket?.isActive == true) socket else null
     }
 
     companion object {

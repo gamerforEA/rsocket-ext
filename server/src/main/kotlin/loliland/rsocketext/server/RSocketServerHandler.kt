@@ -5,8 +5,13 @@ import io.ktor.utils.io.core.*
 import io.rsocket.kotlin.ConnectionAcceptorContext
 import io.rsocket.kotlin.RSocket
 import io.rsocket.kotlin.payload.Payload
-import kotlinx.coroutines.*
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeoutOrNull
 import loliland.rsocketext.common.RSocketHandler
 import loliland.rsocketext.common.SetupData
 import loliland.rsocketext.common.exception.SilentCancellationException
@@ -45,7 +50,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
 
         synchronized(state) {
             connections[connectionName] = connection
-            state.onConnect()
+            state.onConnect(connection)
 
             onConnectionSetup(connection)
         }
@@ -53,7 +58,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
         ctx.requester.coroutineContext.job.invokeOnCompletion {
             synchronized(state) {
                 if (connections.remove(connectionName, connection)) {
-                    state.onDisconnect()
+                    state.onDisconnect(connection)
                 }
 
                 onConnectionClosed(connection, it)
@@ -138,7 +143,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
 
     private suspend fun waitConnection(connectionName: String, timeout: Duration?): RSocket? {
         // Fast path
-        getActiveSocket(connectionName)?.let { return@waitConnection it }
+        connections[connectionName]?.socket?.also { if (it.isActive) return@waitConnection it }
 
         val state = connectionsStates[connectionName] ?: error("Unknown connection with name: $connectionName")
 
@@ -147,7 +152,7 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
         }
 
         val untilDeadline = run {
-            val disconnectTime = state.disconnectData.get()?.disconnectTime ?: return null
+            val disconnectTime = state.disconnectTime.get() ?: return@run timeout
             val deadline = disconnectTime + timeout
             deadline - TimeSource.Monotonic.markNow()
         }
@@ -157,35 +162,23 @@ abstract class RSocketServerHandler<S : SetupData>(mapper: ObjectMapper, tracker
         }
 
         return withTimeoutOrNull(untilDeadline) {
-            while (isActive) {
-                getActiveSocket(connectionName)?.let { return@withTimeoutOrNull it }
-
-                val mutex = state.disconnectData.get()?.connectMutex ?: break
-                mutex.await()
-            }
-
-            return@withTimeoutOrNull null
+            state.socket.firstOrNull { it?.isActive == true }
         }
-    }
-
-    private fun getActiveSocket(connectionName: String): RSocket? {
-        val socket = connections[connectionName]?.socket
-        return if (socket?.isActive == true) socket else null
     }
 
     private class ConnectionState {
-        val disconnectData = AtomicReference<DisconnectData?>()
+        val disconnectTime = AtomicReference<TimeSource.Monotonic.ValueTimeMark?>()
+        val socket = MutableStateFlow<RSocket?>(null)
 
-        fun onConnect() {
-            disconnectData.get()?.connectMutex?.complete(Unit)
+        fun onConnect(connection: RSocketConnection<*>) {
+            this.socket.value = connection.socket
         }
 
-        fun onDisconnect() = disconnectData.set(DisconnectData())
-    }
-
-    private class DisconnectData {
-        val disconnectTime = TimeSource.Monotonic.markNow()
-        val connectMutex = CompletableDeferred<Unit>()
+        fun onDisconnect(connection: RSocketConnection<*>) {
+            disconnectTime.set(TimeSource.Monotonic.markNow())
+            // this.socket.compareAndSet(connection.socket, null) - было бы полезно для очистки памяти, но придётся
+            // лишний раз будить ждущие в waitConnection корутины.
+        }
     }
 
     companion object {
